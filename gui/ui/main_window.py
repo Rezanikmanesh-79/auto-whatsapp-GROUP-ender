@@ -167,7 +167,6 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(title)
 
         self.db_groups_list = QListWidget()
-        self.db_groups_list.currentItemChanged.connect(self.on_db_group_selected)
         left_layout.addWidget(self.db_groups_list)
 
         btn_layout = QHBoxLayout()
@@ -223,46 +222,6 @@ class MainWindow(QMainWindow):
         self.tab_create_btn = QPushButton("Create Group on WhatsApp")
         self.tab_create_btn.clicked.connect(self.tab_create_group_clicked)
         right_layout.addWidget(self.tab_create_btn)
-
-        right_layout.addSpacing(20)
-
-        # Selected group details
-        details_title = QLabel("Selected Group Details")
-        details_title.setFont(font)
-        right_layout.addWidget(details_title)
-
-        self.db_group_name_label = QLabel("No group selected")
-        right_layout.addWidget(self.db_group_name_label)
-
-        self.db_group_categories_label = QLabel("")
-        self.db_group_categories_label.setWordWrap(True)
-        right_layout.addWidget(self.db_group_categories_label)
-
-        right_layout.addWidget(QLabel("Members:"))
-        self.db_members_list = QListWidget()
-        right_layout.addWidget(self.db_members_list)
-
-        add_mem_layout = QHBoxLayout()
-        self.db_new_member = QLineEdit()
-        self.db_new_member.setPlaceholderText("New member...")
-        self.db_add_mem_btn = QPushButton("Add")
-        self.db_add_mem_btn.clicked.connect(self.db_add_member)
-        add_mem_layout.addWidget(self.db_new_member)
-        add_mem_layout.addWidget(self.db_add_mem_btn)
-        right_layout.addLayout(add_mem_layout)
-
-        self.db_remove_mem_btn = QPushButton("Remove Selected Member")
-        self.db_remove_mem_btn.clicked.connect(self.db_remove_member)
-        right_layout.addWidget(self.db_remove_mem_btn)
-
-        right_layout.addWidget(QLabel("Note:"))
-        self.db_note = QTextEdit()
-        self.db_note.setMaximumHeight(80)
-        right_layout.addWidget(self.db_note)
-
-        self.db_save_note_btn = QPushButton("Save Note")
-        self.db_save_note_btn.clicked.connect(self.db_save_note)
-        right_layout.addWidget(self.db_save_note_btn)
 
         right_layout.addStretch()
         splitter.addWidget(right)
@@ -368,9 +327,7 @@ class MainWindow(QMainWindow):
         if not category:
             QMessageBox.warning(self, "Error", "No category available. Add one first.")
             return
-        if self.db.add_group_to_category(item.text(), category):
-            self.on_db_group_selected()
-        else:
+        if not self.db.add_group_to_category(item.text(), category):
             QMessageBox.warning(
                 self, "Error", "Group already in that category (or invalid)."
             )
@@ -381,7 +338,6 @@ class MainWindow(QMainWindow):
             return
         if self.db.remove_group_from_category(item.text(), self.current_category):
             self.refresh_db_groups()
-            self.on_db_group_selected()
 
     def import_from_categories_file(self):
         path = self.DATA_DIR / "group_categories.json"
@@ -399,31 +355,6 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self, "Import", "No new groups found in group_categories.json."
             )
-
-    def on_db_group_selected(self):
-        item = self.db_groups_list.currentItem()
-        if item is None:
-            self.db_group_name_label.setText("No group selected")
-            self.db_group_categories_label.setText("")
-            self.db_members_list.clear()
-            return
-
-        name = item.text()
-        self.db_group_name_label.setText(f"Group: {name}")
-
-        cats = self.db.categories_of(name)
-        self.db_group_categories_label.setText(
-            "Categories: " + (", ".join(cats) if cats else "(none)")
-        )
-
-        group = self.db.get_group(name)
-        if group is None:
-            return
-
-        self.db_members_list.clear()
-        for m in group.get("members", []):
-            self.db_members_list.addItem(m)
-        self.db_note.setPlainText(group.get("note", ""))
 
     def db_add_group(self):
         text, ok = QInputDialog.getText(self, "Add Group", "Group name:")
@@ -456,36 +387,6 @@ class MainWindow(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             if self.db.remove_group(name):
                 self.refresh_db_groups()
-                self.db_members_list.clear()
-                self.db_group_name_label.setText("No group selected")
-                self.db_group_categories_label.setText("")
-
-    def db_add_member(self):
-        item = self.db_groups_list.currentItem()
-        if item is None:
-            return
-        name = item.text()
-        mem = self.db_new_member.text().strip()
-        if mem and self.db.add_member(name, mem):
-            self.db_members_list.addItem(mem)
-            self.db_new_member.clear()
-
-    def db_remove_member(self):
-        item = self.db_groups_list.currentItem()
-        mem_item = self.db_members_list.currentItem()
-        if item is None or mem_item is None:
-            return
-        if self.db.remove_member(item.text(), mem_item.text()):
-            self.db_members_list.takeItem(self.db_members_list.row(mem_item))
-
-    def db_save_note(self):
-        item = self.db_groups_list.currentItem()
-        if item is None:
-            return
-        group = self.db.get_group(item.text())
-        if group:
-            group["note"] = self.db_note.toPlainText().strip()
-            self.db.save()
 
     def tab_create_group_clicked(self):
         name = self.tab_group_name.text().strip()
