@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from workers.whatsapp_worker import WhatsAppWorker
-from core.categories import load_categories
+from core.categories import load_categories, match_category
 from core.database import GroupDatabase
 from pathlib import Path
 
@@ -154,6 +154,28 @@ class MainWindow(QMainWindow):
         self.db_import_btn = QPushButton("Import from group_categories.json")
         self.db_import_btn.clicked.connect(self.import_from_categories_file)
         cat_layout.addWidget(self.db_import_btn)
+
+        cat_layout.addSpacing(16)
+
+        # Auto-categorize: same regex matching as the groups.py CLI
+        # script's CATEGORIES = {"category": r"pattern"} + match_category().
+        # User types a category name + a keyword/regex; every already-known
+        # group whose name matches gets tagged into that category.
+        auto_title = QLabel("Auto-Categorize (keyword/regex)")
+        auto_title.setFont(font)
+        cat_layout.addWidget(auto_title)
+
+        self.db_auto_cat_name = QLineEdit()
+        self.db_auto_cat_name.setPlaceholderText("Category name...")
+        cat_layout.addWidget(self.db_auto_cat_name)
+
+        self.db_auto_cat_pattern = QLineEdit()
+        self.db_auto_cat_pattern.setPlaceholderText("Keyword or regex pattern...")
+        cat_layout.addWidget(self.db_auto_cat_pattern)
+
+        self.db_auto_cat_btn = QPushButton("Search && Add to Category")
+        self.db_auto_cat_btn.clicked.connect(self.db_auto_categorize)
+        cat_layout.addWidget(self.db_auto_cat_btn)
 
         splitter.addWidget(cat_panel)
 
@@ -355,6 +377,55 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self, "Import", "No new groups found in group_categories.json."
             )
+
+    def db_auto_categorize(self):
+        """
+        Same idea as CATEGORIES = {"category": r"pattern"} + match_category()
+        in the groups.py CLI script, driven from the UI instead of a hardcoded
+        dict: every already-known group whose name matches the pattern gets
+        tagged into the given category (created if it doesn't exist yet).
+        """
+        category = self.db_auto_cat_name.text().strip()
+        pattern = self.db_auto_cat_pattern.text().strip()
+
+        if not category:
+            QMessageBox.warning(self, "Auto-Categorize", "Category name cannot be empty.")
+            return
+        if not pattern:
+            QMessageBox.warning(self, "Auto-Categorize", "Keyword/pattern cannot be empty.")
+            return
+
+        try:
+            matches = [
+                name for name in self.db.get_all_group_names()
+                if match_category(name, pattern)
+            ]
+        except ValueError as exc:
+            QMessageBox.warning(self, "Auto-Categorize", str(exc))
+            return
+
+        if not matches:
+            QMessageBox.information(
+                self, "Auto-Categorize", "No groups matched this keyword/pattern."
+            )
+            return
+
+        self.db.add_category(category)  # no-op if it already exists
+
+        added = 0
+        for name in matches:
+            if self.db.add_group_to_category(name, category):
+                added += 1
+
+        self.load_db_categories()
+        self.select_db_category(category)
+
+        already_in = len(matches) - added
+        message = f'{len(matches)} group(s) matched "{pattern}".\n{added} added to "{category}".'
+        if already_in:
+            message += f"\n{already_in} were already in it."
+
+        QMessageBox.information(self, "Auto-Categorize", message)
 
     def db_add_group(self):
         text, ok = QInputDialog.getText(self, "Add Group", "Group name:")
