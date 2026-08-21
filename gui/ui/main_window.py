@@ -53,7 +53,8 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.worker: Optional[WhatsAppWorker] = None
-        self.groups: list[str] = []
+        self.all_groups: list[str] = []   # ← همهٔ گروه‌های اسکن‌شده/ذخیره‌شده
+        self.groups: list[str] = []       # ← گروه‌های فعلی (با اعمال فیلتر دسته)
         self.db = GroupDatabase(self.DB_PATH)
         self.current_category: Optional[str] = None
 
@@ -305,6 +306,7 @@ class MainWindow(QMainWindow):
             return
         if self.db.add_category(text.strip()):
             self.load_db_categories()
+            self._refresh_sender_category_combo()   # ← SYNC
         else:
             QMessageBox.warning(self, "Error", "Category already exists.")
 
@@ -321,6 +323,7 @@ class MainWindow(QMainWindow):
             self.current_category = new_name
             self.load_db_categories()
             self.select_db_category(new_name)
+            self._refresh_sender_category_combo()   # ← SYNC
         else:
             QMessageBox.warning(self, "Error", "Cannot rename category.")
 
@@ -339,6 +342,7 @@ class MainWindow(QMainWindow):
             self.current_category = None
             self.load_db_categories()
             self.refresh_db_groups()
+            self._refresh_sender_category_combo()   # ← SYNC
 
     def db_assign_group_to_category(self):
         item = self.db_groups_list.currentItem()
@@ -366,6 +370,7 @@ class MainWindow(QMainWindow):
         added = self.db.import_from_categories_file(path)
         self.load_db_categories()
         self.refresh_db_groups()
+        self._refresh_sender_category_combo()       # ← SYNC
 
         if not path.exists():
             QMessageBox.warning(self, "Import", f"File not found:\n{path}")
@@ -419,6 +424,7 @@ class MainWindow(QMainWindow):
 
         self.load_db_categories()
         self.select_db_category(category)
+        self._refresh_sender_category_combo()       # ← SYNC
 
         already_in = len(matches) - added
         message = f'{len(matches)} group(s) matched "{pattern}".\n{added} added to "{category}".'
@@ -518,12 +524,16 @@ class MainWindow(QMainWindow):
             if not all_groups:
                 return
 
-            self.groups = all_groups
-            self.groups_label.setText(f"{len(all_groups)} groups loaded (saved)")
+            self.all_groups = all_groups
+            # پر کردن کمبو باکس دسته‌ها از دیتابیس/فایل
             self.category_combo.clear()
-            self.category_combo.addItems(list(data.keys()))
+            self.category_combo.addItem("All Groups")
+            for cat in self.db.category_names():
+                if cat != "All Groups":
+                    self.category_combo.addItem(cat)
             self.category_combo.setEnabled(True)
-            self.send_button.setEnabled(True)
+
+            self._apply_category_filter()   # ← فیلتر اولیه
             self.log(f"Loaded {len(all_groups)} groups from save.")
 
         except Exception as exc:
@@ -674,6 +684,36 @@ class MainWindow(QMainWindow):
         return font
 
     # =====================================================
+    # Sender Category Combo — REAL-TIME SYNC
+    # =====================================================
+
+    def _refresh_sender_category_combo(self):
+        """
+        منوی کشویی Category تب Send Message را از DB دوباره می‌سازد
+        در حالی که دستهٔ در حال انتخاب کاربر (اگر هنوز موجود باشد) حفظ می‌شود.
+        """
+        current = self.category_combo.currentText()
+
+        # بلاک کردن سیگنال موقت تا currentIndexChanged اشتباهی فعال نشه
+        self.category_combo.blockSignals(True)
+        self.category_combo.clear()
+        self.category_combo.addItem("All Groups")
+
+        for cat in self.db.category_names():
+            if cat != "All Groups":
+                self.category_combo.addItem(cat)
+
+        # برگردوندن انتخاب قبلی اگر هنوز هست
+        idx = self.category_combo.findText(current)
+        if idx >= 0:
+            self.category_combo.setCurrentIndex(idx)
+
+        self.category_combo.blockSignals(False)
+
+        # اگر انتخاب تغییر کرده (مثلاً دستهٔ قبلی حذف شده)، فیلتر رو به‌روز کن
+        self._apply_category_filter()
+
+    # =====================================================
     # Actions
     # =====================================================
 
@@ -706,24 +746,40 @@ class MainWindow(QMainWindow):
         self.scan_requested.emit()
 
     def on_groups_finished(self, groups: list):
-        self.groups = groups
+        self.all_groups = groups
         count = len(groups)
-        self.groups_label.setText(f"{count} groups loaded")
-        self.category_combo.clear()
-        self.category_combo.addItem("All Groups")
-        self.category_combo.setEnabled(count > 0)
-        self.send_button.setEnabled(count > 0)
+
+        # پر کردن کمبو باکس از دیتابیس (شامل دسته‌هایی که قبلاً ساختی)
+        self._refresh_sender_category_combo()
+
         self.scan_button.setEnabled(True)
         self.progress_bar.setValue(100)
-        self.progress_label.setText(f"{count} groups loaded")
-        self.log(f"Loaded {count} groups.")
+        self.progress_label.setText(f"{count} groups scanned")
+        self.log(f"Scanned {count} groups.")
 
     def category_changed(self, index: int):
         if index < 0:
             return
+        self._apply_category_filter()
         category = self.category_combo.currentText().strip()
         if category:
-            self.log(f"Selected category: {category}")
+            self.log(f"Selected category: {category} — {len(self.groups)} group(s) ready to send.")
+
+    def _apply_category_filter(self):
+        """بر اساس دسته انتخاب‌شده در کمبو، self.groups را محدود می‌کند."""
+        category = self.category_combo.currentText().strip()
+
+        if category == "All Groups" or not category:
+            self.groups = list(self.all_groups)
+        else:
+            # گروه‌های این دسته را از DB می‌گیریم
+            db_groups = self.db.get_category_groups(category)
+            # فقط گروه‌هایی که واقعاً در all_groups (اسکن‌شده) هستند را نگه می‌داریم
+            self.groups = [g for g in db_groups if g in self.all_groups]
+
+        count = len(self.groups)
+        self.groups_label.setText(f"{count} group(s) selected")
+        self.send_button.setEnabled(count > 0)
 
     def send_clicked(self):
         message = self.message_input.toPlainText().strip()
@@ -731,12 +787,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Message", "Message cannot be empty.")
             return
         if not self.groups:
-            QMessageBox.warning(self, "Groups", "No groups loaded.")
+            QMessageBox.warning(self, "Groups", "No groups selected for this category.")
             return
 
         delay = self.delay_spinbox.value()
         confirm = QMessageBox.question(
-            self, "Confirm", f"Send message to {len(self.groups)} groups?"
+            self, "Confirm", f"Send message to {len(self.groups)} groups in category '{self.category_combo.currentText()}'?"
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
