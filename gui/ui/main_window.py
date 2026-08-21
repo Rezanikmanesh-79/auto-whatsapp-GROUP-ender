@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         self.worker: Optional[WhatsAppWorker] = None
         self.groups: list[str] = []
         self.db = GroupDatabase(self.DB_PATH)
+        self.current_category: Optional[str] = None
 
         # groups_db.json (self.db) is a different file from
         # group_categories.json — if it's empty, pull the groups in
@@ -116,15 +117,52 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Left: Groups list
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(12)
+
+        # Left: Categories (e.g. "All Groups") — selecting one filters
+        # the Groups list in the middle to just that category's groups.
+        cat_panel = QWidget()
+        cat_layout = QVBoxLayout(cat_panel)
+        cat_layout.setContentsMargins(0, 0, 0, 0)
+
+        cat_title = QLabel("Categories")
+        cat_title.setFont(font)
+        cat_layout.addWidget(cat_title)
+
+        self.db_categories_list = QListWidget()
+        self.db_categories_list.currentItemChanged.connect(self.on_db_category_selected)
+        cat_layout.addWidget(self.db_categories_list)
+
+        cat_btn_layout = QHBoxLayout()
+        self.db_add_category_btn = QPushButton("Add")
+        self.db_add_category_btn.clicked.connect(self.db_add_category)
+        self.db_rename_category_btn = QPushButton("Rename")
+        self.db_rename_category_btn.clicked.connect(self.db_rename_category)
+        self.db_delete_category_btn = QPushButton("Delete")
+        self.db_delete_category_btn.clicked.connect(self.db_delete_category)
+        cat_btn_layout.addWidget(self.db_add_category_btn)
+        cat_btn_layout.addWidget(self.db_rename_category_btn)
+        cat_btn_layout.addWidget(self.db_delete_category_btn)
+        cat_layout.addLayout(cat_btn_layout)
+
+        self.db_clear_filter_btn = QPushButton("Show All Groups (no filter)")
+        self.db_clear_filter_btn.clicked.connect(self.clear_db_category_filter)
+        cat_layout.addWidget(self.db_clear_filter_btn)
+
+        self.db_import_btn = QPushButton("Import from group_categories.json")
+        self.db_import_btn.clicked.connect(self.import_from_categories_file)
+        cat_layout.addWidget(self.db_import_btn)
+
+        splitter.addWidget(cat_panel)
+
+        # Middle: Groups in the selected category (or all groups, unfiltered)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
         title = QLabel("Groups Database")
-        font = QFont()
-        font.setBold(True)
-        font.setPointSize(12)
         title.setFont(font)
         left_layout.addWidget(title)
 
@@ -148,9 +186,19 @@ class MainWindow(QMainWindow):
         self.db_refresh_btn.clicked.connect(self.refresh_db_groups)
         left_layout.addWidget(self.db_refresh_btn)
 
-        self.db_import_btn = QPushButton("Import from group_categories.json")
-        self.db_import_btn.clicked.connect(self.import_from_categories_file)
-        left_layout.addWidget(self.db_import_btn)
+        left_layout.addWidget(QLabel("Assign selected group to category:"))
+        assign_layout = QHBoxLayout()
+        self.db_assign_category_combo = QComboBox()
+        self.db_assign_btn = QPushButton("Add to Category")
+        self.db_assign_btn.clicked.connect(self.db_assign_group_to_category)
+        assign_layout.addWidget(self.db_assign_category_combo)
+        assign_layout.addWidget(self.db_assign_btn)
+        left_layout.addLayout(assign_layout)
+
+        self.db_remove_from_category_btn = QPushButton("Remove from Selected Category")
+        self.db_remove_from_category_btn.setEnabled(False)
+        self.db_remove_from_category_btn.clicked.connect(self.db_remove_group_from_category)
+        left_layout.addWidget(self.db_remove_from_category_btn)
 
         splitter.addWidget(left)
 
@@ -186,6 +234,10 @@ class MainWindow(QMainWindow):
         self.db_group_name_label = QLabel("No group selected")
         right_layout.addWidget(self.db_group_name_label)
 
+        self.db_group_categories_label = QLabel("")
+        self.db_group_categories_label.setWordWrap(True)
+        right_layout.addWidget(self.db_group_categories_label)
+
         right_layout.addWidget(QLabel("Members:"))
         self.db_members_list = QListWidget()
         right_layout.addWidget(self.db_members_list)
@@ -217,6 +269,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(splitter)
 
+        self.load_db_categories()
         self.refresh_db_groups()
         return tab
 
@@ -226,12 +279,114 @@ class MainWindow(QMainWindow):
 
     def refresh_db_groups(self):
         self.db_groups_list.clear()
-        for name in sorted(self.db.groups.keys(), key=str.casefold):
+
+        if self.current_category is not None:
+            names = sorted(
+                self.db.get_category_groups(self.current_category), key=str.casefold
+            )
+        else:
+            names = sorted(self.db.groups.keys(), key=str.casefold)
+
+        for name in names:
             self.db_groups_list.addItem(name)
+
+    def load_db_categories(self):
+        self.db_categories_list.clear()
+        for name in self.db.category_names():
+            self.db_categories_list.addItem(name)
+        self.refresh_db_assign_combo()
+
+    def refresh_db_assign_combo(self):
+        self.db_assign_category_combo.clear()
+        self.db_assign_category_combo.addItems(self.db.category_names())
+
+    def on_db_category_selected(self):
+        item = self.db_categories_list.currentItem()
+        self.current_category = item.text() if item else None
+        self.db_remove_from_category_btn.setEnabled(self.current_category is not None)
+        self.refresh_db_groups()
+
+    def clear_db_category_filter(self):
+        self.db_categories_list.clearSelection()
+        self.current_category = None
+        self.db_remove_from_category_btn.setEnabled(False)
+        self.refresh_db_groups()
+
+    def select_db_category(self, name: str):
+        for i in range(self.db_categories_list.count()):
+            if self.db_categories_list.item(i).text() == name:
+                self.db_categories_list.setCurrentRow(i)
+                return
+
+    def db_add_category(self):
+        text, ok = QInputDialog.getText(self, "Add Category", "Category name:")
+        if not ok or not text.strip():
+            return
+        if self.db.add_category(text.strip()):
+            self.load_db_categories()
+        else:
+            QMessageBox.warning(self, "Error", "Category already exists.")
+
+    def db_rename_category(self):
+        if self.current_category is None:
+            return
+        text, ok = QInputDialog.getText(
+            self, "Rename Category", "New name:", text=self.current_category
+        )
+        if not ok or not text.strip():
+            return
+        new_name = text.strip()
+        if self.db.rename_category(self.current_category, new_name):
+            self.current_category = new_name
+            self.load_db_categories()
+            self.select_db_category(new_name)
+        else:
+            QMessageBox.warning(self, "Error", "Cannot rename category.")
+
+    def db_delete_category(self):
+        if self.current_category is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Confirm",
+            f"Delete category '{self.current_category}'?\n"
+            "Groups themselves are kept, only the category tag is removed.",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if self.db.delete_category(self.current_category):
+            self.current_category = None
+            self.load_db_categories()
+            self.refresh_db_groups()
+
+    def db_assign_group_to_category(self):
+        item = self.db_groups_list.currentItem()
+        if item is None:
+            QMessageBox.warning(self, "Error", "Select a group first.")
+            return
+        category = self.db_assign_category_combo.currentText().strip()
+        if not category:
+            QMessageBox.warning(self, "Error", "No category available. Add one first.")
+            return
+        if self.db.add_group_to_category(item.text(), category):
+            self.on_db_group_selected()
+        else:
+            QMessageBox.warning(
+                self, "Error", "Group already in that category (or invalid)."
+            )
+
+    def db_remove_group_from_category(self):
+        item = self.db_groups_list.currentItem()
+        if item is None or self.current_category is None:
+            return
+        if self.db.remove_group_from_category(item.text(), self.current_category):
+            self.refresh_db_groups()
+            self.on_db_group_selected()
 
     def import_from_categories_file(self):
         path = self.DATA_DIR / "group_categories.json"
         added = self.db.import_from_categories_file(path)
+        self.load_db_categories()
         self.refresh_db_groups()
 
         if not path.exists():
@@ -249,11 +404,18 @@ class MainWindow(QMainWindow):
         item = self.db_groups_list.currentItem()
         if item is None:
             self.db_group_name_label.setText("No group selected")
+            self.db_group_categories_label.setText("")
             self.db_members_list.clear()
             return
 
         name = item.text()
         self.db_group_name_label.setText(f"Group: {name}")
+
+        cats = self.db.categories_of(name)
+        self.db_group_categories_label.setText(
+            "Categories: " + (", ".join(cats) if cats else "(none)")
+        )
+
         group = self.db.get_group(name)
         if group is None:
             return
@@ -266,7 +428,9 @@ class MainWindow(QMainWindow):
     def db_add_group(self):
         text, ok = QInputDialog.getText(self, "Add Group", "Group name:")
         if ok and text.strip():
-            if self.db.add_group(text.strip()):
+            category = self.current_category or "All Groups"
+            if self.db.add_group(text.strip(), category):
+                self.load_db_categories()
                 self.refresh_db_groups()
             else:
                 QMessageBox.warning(self, "Error", "Group already exists.")
@@ -293,6 +457,8 @@ class MainWindow(QMainWindow):
             if self.db.remove_group(name):
                 self.refresh_db_groups()
                 self.db_members_list.clear()
+                self.db_group_name_label.setText("No group selected")
+                self.db_group_categories_label.setText("")
 
     def db_add_member(self):
         item = self.db_groups_list.currentItem()
@@ -622,12 +788,16 @@ class MainWindow(QMainWindow):
         self.tab_create_btn.setEnabled(True)
         if success:
             QMessageBox.information(self, "Success", "Group created successfully!")
+            # Capture the name BEFORE clearing the field (previously this
+            # was read after .clear(), so it was always empty and the
+            # group never actually made it into the db).
+            name = self.tab_group_name.text().strip()
             self.tab_group_name.clear()
             self.tab_members.clear()
-            # Also add to DB
-            name = self.tab_group_name.text().strip()
             if name:
-                self.db.add_group(name)
+                category = self.current_category or "All Groups"
+                self.db.add_group(name, category)
+                self.load_db_categories()
                 self.refresh_db_groups()
         else:
             QMessageBox.critical(self, "Error", "Failed to create group.")
